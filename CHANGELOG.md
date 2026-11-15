@@ -18,5 +18,5 @@ All notable changes to this repository are recorded here. The format follows
 
 ### Added
 - First public release: the maintained code, documentation, tests and CI.
-- `original/`: the original research code, sanitised (names, credentials, data and notebook outputs removed).
+- `original/`: the original research code (read-only).
 - `CHANGELOG.md`, `CONTRIBUTING.md` and a documentation index in `docs/README.md`.
