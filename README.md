@@ -6,6 +6,36 @@ A small, repeatable way to generate many candidate predictive features, prove ea
 
 This is a research project I designed and mentored. I wrote the brief and the starter code. The brief had two goals: new candidate features, and, more important, a pipeline that proposes and screens candidates the same way every time instead of adding them by hand. This repo is my own working implementation of the pipeline. It runs end to end on a **synthetic market with known, planted structure**, so you can see what the screen finds, what it wrongly lets through, and how the hold-out catches it.
 
+## What problem this solves
+
+A quant researcher can invent hundreds of candidate features. Test enough of them and some will look predictive by pure luck, and some will look predictive because they quietly use data from the future. This repo builds candidates in a fixed, repeatable way, rejects any that peek at later data, and screens the rest with tests that account for how many were tried.
+
+## What you will learn
+
+- How to write features that are point-in-time by construction, and how to *test* that they are.
+- How publication lags work, and how ignoring one turns noise into a great-looking feature.
+- What an information coefficient (IC) is, and why a partial rank IC against a persistence baseline is fairer.
+- Why a naive p < 0.05 rule fails when you test many features, and how FDR and family-wise control fix it.
+- Why a circular-shift permutation test suits slow-moving time series better than a plain shuffle.
+- How to keep a hold-out honest: select on discovery, look at the hold-out once.
+- How large each classic leakage mistake really is, measured on the same data.
+
+## Key concepts
+
+- **Feature:** a number computed from past data that might predict the next return.
+- **Point-in-time data:** a value placed on the date it became known, not the date it refers to.
+- **Publication lag:** the delay between a value's reference date and its release. Here `macro` arrives 2 business days late.
+- **Look-ahead bias:** using data that was not yet available at the decision time.
+- **Same-bar leakage:** using day t's own bar to predict day t's return.
+- **Information coefficient (IC):** the rank correlation between a feature and the next return.
+- **Partial IC:** the IC after removing what yesterday's return already explains.
+- **Multiple testing:** testing many hypotheses at once, which makes lucky passes almost certain.
+- **False discovery rate (FDR):** the expected share of selected features that are false. Controlled here with the Benjamini-Hochberg (BH) step-up rule.
+- **Family-wise error (max-T):** the chance of even one false selection. Stricter than FDR.
+- **Permutation test (circular shift):** slide the feature against the target in time to build a "no relationship" null, while keeping each series' own autocorrelation.
+- **Stability:** the IC keeps the same sign across sub-periods.
+- **Discovery / hold-out split:** choose features on the first 70%, then check them once on the last 30%.
+
 ## At a glance
 
 | | |
@@ -18,10 +48,17 @@ This is a research project I designed and mentored. I wrote the brief and the st
 
 ## How it works
 
+```mermaid
+flowchart LR
+    A[data.py<br/>synthetic market] --> B[guard.py<br/>published view, per-column lags]
+    B --> C[library.py<br/>34 candidates fixed up front]
+    C --> D[guard.py<br/>shift to t-1, perturbation check]
+    D --> E[screen.py<br/>discovery 70%: partial IC, permutations, BH, max-T, stability]
+    E --> F[screen.py<br/>hold-out 30%, looked at once]
+    A --> G[breakage.py<br/>each mistake on purpose]
 ```
-data ──► published view ──► candidate grid ──► guard (shift + perturbation check) ──► screen (discovery) ──► hold-out
-data.py   guard.py           library.py          guard.py                               screen.py               screen.py
-```
+
+In plain text: data -> published view -> candidate grid -> guard -> screen (discovery) -> hold-out, with the breakage study run beside it.
 
 1. **Generate.** `library.py` builds every candidate up front: momentum, volatility and vol ratios, volume z-scores, range, close location, distance from moving averages, cross-asset correlation and relative momentum, macro changes and level, and six pairwise interactions. The full count is known before any test is run, so the multiple-testing correction covers all of them.
 2. **Guard.** `compute` moves each column to the row on which it was published (`macro` arrives 2 days after its reference date), runs the feature function, and shifts the result by one row. The feature on row t therefore uses data up to t-1. `check_no_lookahead` then verifies this rather than trusting it: it scrambles every input not yet published at t-1 and checks that the value at t does not move. A hidden centred window, `shift(-k)` or full-sample statistic fails, and the candidate is rejected before screening.
@@ -36,6 +73,8 @@ data.py   guard.py           library.py          guard.py                       
 
 ## Results on synthetic data
 
+Every number in this section comes from the synthetic market, with structure I planted on purpose. None of it is a real-market result.
+
 `python scripts/run_screen.py` (seed 7, 2,500 days, planted signal 0.15). The planted driver is the 5-day volume z-score.
 
 | Rule | Selected | Contain the planted driver | False | Hold-out IC (planted / false) |
@@ -49,7 +88,7 @@ What this shows:
 - The naive rule is half wrong. With 34 candidates, a 5% threshold is expected to pass one or two by luck. Correlated features cluster, so in practice it passed five.
 - FDR control is a candidate list, not a verdict. At q = 0.10 the three false picks (`clv_1`, `volratio_21_63`, `macro_chg_21`) got through. FDR is a rate in expectation, so one run can be worse. All three collapse to about zero on the hold-out, while the planted features keep an IC of 0.11 to 0.16. I checked `clv_1` on a 20,000-day sample, and its true IC there is about zero.
 - The family-wise max-T rule picked only true features here, at the price of missing `volume_z_21`.
-- **Noise check**: with the signal and the macro trap switched off, over 20 seeds, BH selected something in 3 runs and max-T in 1, close to their 10% and 5% levels. A CI test checks that a null seed selects nothing.
+- **Noise check**: `python scripts/run_screen.py --signal 0 --macro-trap 0` switches both off. At seed 7 the naive rule still passes 6 features, while BH and max-T select none. With `--signal 0` alone the macro trap stays on, and at seed 7 BH selects `macro_chg_21`. Over 20 seeds with both off, over 20 seeds, BH selected something in 3 runs and max-T in 1, close to their 10% and 5% levels. A CI test checks that a null seed selects nothing.
 
 **Breakage study**: each classic mistake made on purpose, with partial rank IC over the whole sample:
 
@@ -77,10 +116,14 @@ The first three mistakes turn noise into an apparently excellent feature. The fu
 ## Repo layout
 
 ```
-src/featurefactory/   data.py · guard.py · library.py · screen.py · breakage.py
-scripts/              run_screen.py
-tests/                guard (good and bad features, publication lag), BH, hold-out isolation, noise, signal, breakage
-docs/                 methodology.md
+src/featurefactory/   data.py (synthetic market) · guard.py (point-in-time guard) · library.py (candidates)
+                      screen.py (IC, permutations, BH, max-T, hold-out) · breakage.py (mistakes on purpose)
+scripts/              run_screen.py (the CLI that prints the tables above)
+tests/                test_factory.py: guard (good and bad features, publication lag), BH, hold-out isolation,
+                      noise, signal, breakage
+docs/                 README.md (index) · methodology.md (method and bias audit)
+original/             the sanitised original brief and starter code (read-only)
+.github/              CI workflow
 ```
 
 ## Quick start
@@ -89,8 +132,10 @@ docs/                 methodology.md
 pip install -r requirements.txt
 pytest -q
 python scripts/run_screen.py                 # planted signal
-python scripts/run_screen.py --signal 0      # pure noise
+python scripts/run_screen.py --signal 0 --macro-trap 0   # pure noise: BH and max-T should select nothing
 ```
+
+`python scripts/run_screen.py --help` lists the other options (`--seed`, `--n-days`, `--n-perm`, `--q`).
 
 To add a feature, write a function of the data frame as if its last row were "today", and wrap it in `Feature(name, family, fn)`. The guard handles the shift and publication lags, and rejects it if it peeks.
 

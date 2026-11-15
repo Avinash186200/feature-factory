@@ -2,7 +2,7 @@
 
 Examples:
     python scripts/run_screen.py                 # synthetic data with a planted signal
-    python scripts/run_screen.py --signal 0      # pure noise: the screen should select nothing
+    python scripts/run_screen.py --signal 0 --macro-trap 0   # pure noise: the screen should select nothing
 """
 from __future__ import annotations
 
@@ -24,12 +24,14 @@ def main() -> None:
     ap.add_argument("--n-days", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--signal", type=float, default=0.15, help="planted signal strength (0 = none)")
+    ap.add_argument("--macro-trap", type=float, default=0.25,
+                    help="loading on the unpublished macro change, the look-ahead trap (0 = none)")
     ap.add_argument("--n-perm", type=int, default=500)
     ap.add_argument("--q", type=float, default=0.10, help="false discovery rate target")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
 
-    df = make_synthetic_market(n_days=args.n_days, seed=args.seed, signal=args.signal)
+    df = make_synthetic_market(n_days=args.n_days, seed=args.seed, signal=args.signal, macro_trap=args.macro_trap)
     y = target_returns(df)
     cands = generate_candidates()
     cfg = ScreenConfig(n_perm=args.n_perm, q=args.q, seed=args.seed)
@@ -40,7 +42,7 @@ def main() -> None:
     table.to_csv(out / "feature_catalogue.csv")
     pd.set_option("display.width", 140)
 
-    print(f"Synthetic market: {len(df)} days, seed {args.seed}, planted signal {args.signal}")
+    print(f"Synthetic market: {len(df)} days, seed {args.seed}, planted signal {args.signal}, macro trap {args.macro_trap}")
     print(f"{len(cands)} candidates generated, {len(table)} passed the leakage guard, "
           f"rejected: {table.attrs['rejected_by_guard'] or 'none'}")
     print(f"Discovery period ends {table.attrs['split'].date()}; hold-out used once at the end\n")

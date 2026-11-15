@@ -18,6 +18,8 @@ The synthetic generator plants three things:
 - **A publication-lag trap**: day t's return also loads on the macro change for reference date t-1, which is not published until t+1. Only a pipeline that ignores publication lags can see it.
 - **A same-bar trap**: the close location within a day's range is mechanically tied to that day's return.
 
+The script exposes the first two as `--signal` and `--macro-trap`. A pure-noise run needs both at 0.
+
 ## Timing and the guard
 
 Convention: the target on row t is day t's log return divided by the 21-day volatility up to t-1. A feature on row t must be built from data published by the close of t-1.
