@@ -139,6 +139,13 @@ python scripts/run_screen.py --signal 0 --macro-trap 0   # pure noise: BH and ma
 
 To add a feature, write a function of the data frame as if its last row were "today", and wrap it in `Feature(name, family, fn)`. The guard handles the shift and publication lags, and rejects it if it peeks.
 
+## Related
+
+This repo screens features one at a time. When many candidates are near-copies of each other, the next question
+is which groups of features a model actually relies on. That is covered in
+[clustered-feature-importance](https://github.com/Avinash186200/clustered-feature-importance): MDI, permutation,
+SHAP, drop-column and clustered importance, scored against known ground truth.
+
 ## Original research code
 
 [`original/`](original/README.md) holds the code as I first wrote it for this project. It is kept so you can
