@@ -19,6 +19,7 @@ A quant researcher can invent hundreds of candidate features. Test enough of the
 - Why a circular-shift permutation test suits slow-moving time series better than a plain shuffle.
 - How to keep a hold-out honest: select on discovery, look at the hold-out once.
 - How large each classic leakage mistake really is, measured on the same data.
+- How fractional differentiation trades memory for stationarity, and how to pick the order d without peeking.
 
 ## Key concepts
 
@@ -35,6 +36,8 @@ A quant researcher can invent hundreds of candidate features. Test enough of the
 - **Permutation test (circular shift):** slide the feature against the target in time to build a "no relationship" null, while keeping each series' own autocorrelation.
 - **Stability:** the IC keeps the same sign across sub-periods.
 - **Discovery / hold-out split:** choose features on the first 70%, then check them once on the last 30%.
+- **Fractional differentiation (FFD):** `(1 - B)^d` with `0 < d < 1`, a transform between the price level (d = 0) and the return (d = 1), computed over a fixed trailing window.
+- **ADF test:** the augmented Dickey-Fuller test for a unit root. A statistic below the 5% critical value is read as stationary.
 
 ## At a glance
 
@@ -101,6 +104,41 @@ What this shows:
 
 The first three mistakes turn noise into an apparently excellent feature. The full-sample z-score barely moves a **rank** IC, because it is close to a monotone transform. It matters once a model or a fixed threshold consumes the values, and the guard flags it either way.
 
+## Fractional differentiation: memory vs stationarity
+
+A price level remembers its whole history, but it is not stationary, so its statistics drift and a model fitted on one period does not carry to the next. The return (the first difference) is stationary, but it has thrown almost all of that memory away: on the synthetic close below, the return's correlation with the log price level is 0.03. Fractional differentiation, `(1 - B)^d` with `0 < d < 1`, sits in between. The aim is the smallest `d` that passes a stationarity test, which keeps the most memory.
+
+`fracdiff.py` has:
+
+- `ffd_weights(d, threshold)`: the weights from the recursion `w_0 = 1`, `w_k = -w_{k-1} (d - k + 1) / k`, cut once `|w_k|` falls below `threshold` (default 1e-4). That gives a **fixed-width window** (FFD), so every value uses the same number of past rows.
+- `frac_diff_ffd(series, d)`: the transform. The value on row t reads rows t - width + 1 to t only. d = 0 returns the series and d = 1 the first difference, exactly.
+- `adf_test(series)`: an ADF test in numpy (statsmodels is not a dependency). Constant term, lag count by AIC, critical values from MacKinnon (2010). I checked it against `statsmodels.tsa.stattools.adfuller(..., regression="c", autolag="AIC")` on random walks, white noise and AR series: the statistic, lag and critical values matched. A test repeats that check when statsmodels is installed and is skipped otherwise (CI does not install it).
+- `min_ffd_d(series)`: tries d = 0, 0.05, ..., 1 and returns the smallest d from which every larger d passes the 5% ADF test, with a table of the window width, the sum of the kept weights `sum_w`, the ADF statistic and the correlation with the original series for each d. Near the boundary the ADF statistic is noisy, so a single pass below a failing d is not taken.
+- `fracdiff_feature(column, d)`: the transform as a `Feature`, so the guard shifts it to t-1 and perturbation-tests it like any other candidate.
+
+**Point in time.** The weights only touch past rows, and a test perturbs future values and checks that earlier outputs do not move. The choice of d is itself a fitted setting, so the script chooses it on the discovery period (first 70%) only. The guard also fails a feature that is NaN on every probe row, since then nothing was compared: a window longer than the data could otherwise hide a `shift(-k)` (tested).
+
+**What the truncated window leaves behind.** The full, infinite-window expansion has weights that sum to zero for any d > 0, so the level cancels out. The fixed window cuts the tail, the kept weights sum to `sum_w` > 0, and the output still carries `sum_w` times the level of the series. With the default threshold, `sum_w` is 0.72 at d = 0.05, 0.15 at d = 0.28 and 0.053 at d = 0.45 (the script prints it for every d).
+
+`python scripts/run_fracdiff.py` (seed 7, synthetic data, threshold 1e-4; the full table for every d is printed):
+
+| Series (discovery rows only) | min d | Window (rows) | sum_w | ADF stat at min d (5% critical) | Corr with original at min d | Corr at d = 1 |
+|---|---|---|---|---|---|---|
+| log close | 0.45 | 238 | 0.053 | -3.33 (-2.86) | 0.696 | 0.032 |
+| macro, as published | 0.30 | 388 | 0.129 | -3.26 (-2.86) | 0.844 | 0.047 |
+| plain random walk, seed 7 | 0.05 | 362 | 0.722 | -3.31 (-2.86) | 0.992 | -0.026 |
+
+Over 20 seeded random walks (seeds 0-19) the min d had a median of 0.28 (`sum_w` 0.15) and a range of 0.05 to 0.40; the search returned a value for all 20. The guard check passes for `ffd_close_0.45`.
+
+What this shows, and what it does not:
+
+- **The random-walk results show how weak the test is, not memory being kept.** For a random walk the infinite-window transform is stationary only for d > 0.5. Every random-walk min d here is below that (0.05 at seed 7, median 0.28), so each of those outputs still carries a share of the non-stationary level (72% at d = 0.05) that the ADF test fails to detect on a truncated, shorter sample. The seed 7 walk is the extreme case: its level is already close to the boundary (statistic -2.83 at d = 0), and the 362 rows lost to the window change the sample being tested.
+- The synthetic close is itself close to a random walk, so the same caution applies to its d = 0.45: part of its 0.70 correlation with the price level comes from the 5% of the level the window leaves in. The transform keeps far more of the level's shape than the return does (0.03), but read the correlation together with `sum_w`.
+- For macro, d = 0.20 passes (-2.93) but d = 0.25 just fails (-2.86), so the rule picks 0.30. That is the boundary noise the "every larger d passes" rule guards against.
+- The threshold matters: `--threshold 1e-3` keeps shorter windows (44 rows at d = 0.5), and the kept weights leave more of the level in (`sum_w` 0.086 at d = 0.5, against 0.040 with the default). The log close needs d = 0.50 there and shows a higher correlation (0.83). Report the threshold with the d.
+- FFD features are **not** added to the 34-candidate grid, so the screen results above are unchanged. Adding them is one line (`fracdiff_feature("close", d)` in the candidate list), and they then count towards the multiple-testing total like any other candidate.
+- Stationarity is not predictiveness. On this synthetic market nothing is planted in the price level, so an FFD feature should not be expected to screen in.
+
 ## Leakage and bias audit
 
 | Issue | Effect | Fix |
@@ -118,9 +156,12 @@ The first three mistakes turn noise into an apparently excellent feature. The fu
 ```
 src/featurefactory/   data.py (synthetic market) · guard.py (point-in-time guard) · library.py (candidates)
                       screen.py (IC, permutations, BH, max-T, hold-out) · breakage.py (mistakes on purpose)
-scripts/              run_screen.py (the CLI that prints the tables above)
+                      fracdiff.py (FFD weights and transform, numpy ADF test, min-d search, guarded feature)
+scripts/              run_screen.py (the CLI that prints the screen tables) · run_fracdiff.py (the min-d tables)
 tests/                test_factory.py: guard (good and bad features, publication lag), BH, hold-out isolation,
                       noise, signal, breakage
+                      test_fracdiff.py: weight recursion, d = 0 and d = 1, no look-ahead, all-NaN guard case, ADF,
+                      min-d search
 docs/                 README.md (index) · methodology.md (method and bias audit)
 original/             the original brief and starter code (read-only)
 .github/              CI workflow
@@ -133,6 +174,7 @@ pip install -r requirements.txt
 pytest -q
 python scripts/run_screen.py                 # planted signal
 python scripts/run_screen.py --signal 0 --macro-trap 0   # pure noise: BH and max-T should select nothing
+python scripts/run_fracdiff.py               # minimum fractional-differencing order d
 ```
 
 `python scripts/run_screen.py --help` lists the other options (`--seed`, `--n-days`, `--n-perm`, `--q`).

@@ -79,6 +79,20 @@ With raw returns, the target's variance moves with market volatility. Volatility
 
 The first three inflate the partial rank IC from about 0 to 0.22-0.78. The fourth barely changes a rank IC, because a full-sample z-score is nearly a monotone transform. It inflates results when a model or a fixed threshold uses the raw values. The guard flags all four.
 
+## Fractional differentiation (memory vs stationarity)
+
+`fracdiff.py` adds a transform for slow-moving inputs such as a price level or a macro series.
+
+- **Weights.** `(1 - B)^d` expands to `sum_k w_k B^k` with `w_0 = 1` and `w_k = -w_{k-1} (d - k + 1) / k`. For non-integer d the weights never reach zero, so the fixed-width version (FFD) drops every weight once `|w_k| < threshold` (default 1e-4). For integer d the series ends by itself: d = 0 gives `[1]` and d = 1 gives `[1, -1]`.
+- **Timing.** The value on row t is `sum_k w_k x_{t-k}` over a trailing window, so it reads only rows up to t. The first `width - 1` rows are NaN. Wrapped by `fracdiff_feature`, the guard then shifts it to t-1 and perturbation-tests it like every other candidate. The guard fails a feature that is NaN on every probe row, so a window longer than the data cannot hide a `shift(-k)`.
+- **Stationarity test.** An augmented Dickey-Fuller regression, `dx_t = a + g x_{t-1} + sum_i b_i dx_{t-i} + e_t`, with the lag count chosen by AIC on a common sample (maximum `12 (n/100)^(1/4)`), then refitted with the chosen lags. The test statistic is the t-statistic on g. Critical values come from the MacKinnon (2010) response surface for the constant-only case. This is written in numpy because statsmodels is not a dependency. Checked once against statsmodels' `adfuller` (same settings) outside the test suite: identical statistic, lag and critical values.
+- **Choosing d.** `min_ffd_d` scans d = 0, 0.05, ..., 1 and returns the smallest d from which every larger d passes at 5%. Correlation with the original falls as d rises, so this d keeps the most memory among the passing values. An isolated pass below a failing d is ignored, because the ADF statistic is noisy near its critical value.
+- **No look-ahead in the choice.** d is a fitted setting. `scripts/run_fracdiff.py` chooses it on the discovery rows only.
+
+- **The truncated window leaves part of the level in.** The infinite-window weights sum to zero for d > 0; the kept weights sum to `sum_w` > 0 (0.72 at d = 0.05, 0.15 at d = 0.28, 0.053 at d = 0.45 with the default threshold), so the output carries that share of the level. A random walk theoretically needs d > 0.5 for the full transform to be stationary, so a smaller min d on a random walk measures the ADF test's low power on the truncated output, not memory kept.
+
+Caveats: windows are longest around d = 0.1-0.2 (about 500 rows with the default threshold), so the test runs on fewer rows there, and a larger threshold changes the chosen d. The ADF test has a 5% false-rejection rate by design, so about one random walk in twenty looks stationary at d = 0. FFD features are not in the default 34-candidate grid, so they do not change the screen results.
+
 ## Bias audit of the starter code
 
 | # | Issue | Effect | Fix |

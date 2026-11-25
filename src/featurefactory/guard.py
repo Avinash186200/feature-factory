@@ -10,6 +10,7 @@ Two layers:
    every input that was *not yet available* at the close of ``t-1`` and checks that the
    feature on row ``t`` does not move. A feature function with a hidden centred window, a
    ``shift(-k)``, or a full-sample statistic fails this check and is rejected by the screen.
+   So does a feature that is NaN on every probe row, since nothing could be compared.
 """
 from __future__ import annotations
 
@@ -60,6 +61,54 @@ def compute(
     return feature.fn(published_view(df, pub_lags)).shift(1).rename(feature.name)
 
 
+def lookahead_report(
+    feature: Feature,
+    df: pd.DataFrame,
+    pub_lags: Mapping[str, int],
+    probes: int = 4,
+    seed: int = 0,
+    guard: bool = True,
+    compute_lags: Mapping[str, int] | None = None,
+) -> tuple[bool, str]:
+    """Run the look-ahead check and return ``(passed, reason)``.
+
+    For a few probe rows ``t``, every column ``c`` is scrambled from row ``t - lag_c`` onward
+    (rows that had not been published by ``t-1``), the feature is recomputed, and the value on
+    row ``t`` must be unchanged (NaN-equal).
+
+    A feature that is NaN on every probe row in both runs fails: nothing was compared, so a
+    pass would prove nothing (for example, a window longer than the data hiding a
+    ``shift(-k)``).
+
+    ``pub_lags`` are the true publication lags used for scrambling. ``compute_lags`` are the
+    lags the feature is computed with (default: the same). Passing ``compute_lags={}`` tests
+    a pipeline that wrongly assumes every value is known on its reference date.
+    """
+    lags_used = pub_lags if compute_lags is None else compute_lags
+    rng = np.random.default_rng(seed)
+    base = compute(feature, df, lags_used, guard=guard)
+    n = len(df)
+    lo, hi = max(300, n // 4), n - 5
+    compared = 0
+    for t in rng.integers(lo, hi, size=probes):
+        scrambled = df.copy()
+        for j, col in enumerate(df.columns):
+            start = max(0, int(t) - int(pub_lags.get(col, 0)))
+            vals = scrambled[col].to_numpy(copy=True)
+            vals[start:] = vals[start:] * (1.5 + rng.random(n - start)) + 1.0
+            scrambled[col] = vals
+        new = compute(feature, scrambled, lags_used, guard=guard)
+        a, b = base.iloc[int(t)], new.iloc[int(t)]
+        if np.isnan(a) and np.isnan(b):
+            continue
+        if not np.isclose(a, b, rtol=1e-9, atol=1e-12):
+            return False, f"value on row {int(t)} changed when later data was scrambled"
+        compared += 1
+    if compared == 0:
+        return False, "the feature is NaN on every probe row, so nothing could be checked"
+    return True, f"unchanged on {compared} of {probes} probe rows"
+
+
 def check_no_lookahead(
     feature: Feature,
     df: pd.DataFrame,
@@ -71,28 +120,6 @@ def check_no_lookahead(
 ) -> bool:
     """Return True if the feature on row ``t`` ignores everything unknown at the close of ``t-1``.
 
-    For a few probe rows ``t``, every column ``c`` is scrambled from row ``t - lag_c`` onward
-    (rows that had not been published by ``t-1``), the feature is recomputed, and the value on
-    row ``t`` must be unchanged (NaN-equal).
-
-    ``pub_lags`` are the true publication lags used for scrambling. ``compute_lags`` are the
-    lags the feature is computed with (default: the same). Passing ``compute_lags={}`` tests
-    a pipeline that wrongly assumes every value is known on its reference date.
+    See ``lookahead_report`` for the method and for the reason behind a failure.
     """
-    lags_used = pub_lags if compute_lags is None else compute_lags
-    rng = np.random.default_rng(seed)
-    base = compute(feature, df, lags_used, guard=guard)
-    n = len(df)
-    lo, hi = max(300, n // 4), n - 5
-    for t in rng.integers(lo, hi, size=probes):
-        scrambled = df.copy()
-        for j, col in enumerate(df.columns):
-            start = max(0, int(t) - int(pub_lags.get(col, 0)))
-            vals = scrambled[col].to_numpy(copy=True)
-            vals[start:] = vals[start:] * (1.5 + rng.random(n - start)) + 1.0
-            scrambled[col] = vals
-        new = compute(feature, scrambled, lags_used, guard=guard)
-        a, b = base.iloc[int(t)], new.iloc[int(t)]
-        if not ((np.isnan(a) and np.isnan(b)) or np.isclose(a, b, rtol=1e-9, atol=1e-12)):
-            return False
-    return True
+    return lookahead_report(feature, df, pub_lags, probes, seed, guard, compute_lags)[0]
