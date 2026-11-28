@@ -6,6 +6,11 @@ A small, repeatable way to generate many candidate predictive features, prove ea
 
 This is a research project I designed and mentored. I wrote the brief and the starter code. The brief had two goals: new candidate features, and, more important, a pipeline that proposes and screens candidates the same way every time instead of adding them by hand. This repo is my own working implementation of the pipeline. It runs end to end on a **synthetic market with known, planted structure**, so you can see what the screen finds, what it wrongly lets through, and how the hold-out catches it.
 
+## Watch
+
+- Video walkthrough: [Data Pipelines for AI: Point-in-Time Data, Look-Ahead Bias](https://youtu.be/RcC7qz3XHdY)
+- Video walkthrough: [Combinatorial Purged CV, Deflated Sharpe and PBO Explained](https://youtu.be/6KIUmIWWHMQ)
+
 ## What problem this solves
 
 A quant researcher can invent hundreds of candidate features. Test enough of them and some will look predictive by pure luck, and some will look predictive because they quietly use data from the future. This repo builds candidates in a fixed, repeatable way, rejects any that peek at later data, and screens the rest with tests that account for how many were tried.
